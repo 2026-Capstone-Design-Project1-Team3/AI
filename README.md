@@ -45,4 +45,4 @@ conda activate AI
 pip install -r 
 
 # 서버 실행 (Uvicorn)
-uvicorn main:app --host 0.0.0.0 --port 8000
+
