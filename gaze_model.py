@@ -7,7 +7,7 @@ from gaze_calibration import face_mesh, get_eye
 
 GAZE_THRESHOLD = 0.05
 
-def analyze_gaze_chunk(video_data_base64, l_offset, r_offset, sample_interval = None):
+def analyze_gaze_chunk(video_data_base64, l_offset, r_offset, sample_interval = None): #일단 interval none으로 해두고 CPU 부하 생각해서 샘플링 interval 조절
     video_bytes = base64.b64decode(video_data_base64)
     temp_path = f"temp_gaze_{uuid.uuid4()}.webm"
     results_list = []
@@ -27,7 +27,7 @@ def analyze_gaze_chunk(video_data_base64, l_offset, r_offset, sample_interval = 
             if not ret:
                 break
         
-            if sample_interval == None or frame_idx % sample_interval == 0:
+            if sample_interval is None or frame_idx % sample_interval == 0:
                 rgb_frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
                 result = face_mesh.process(rgb_frame)
 
