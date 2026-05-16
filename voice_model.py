@@ -1,6 +1,6 @@
 from faster_whisper import WhisperModel
 import os, base64, uuid
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 
 
 from realtime_voice import calculate_speed_score
