@@ -1,14 +1,3 @@
-"""
-test_runner.py
-영상 파일을 입력받아 gesture / gaze / voice / fluency 모델을 모두 실행하고 결과를 출력합니다.
-
-사용법:
-    python test_runner.py --video 영상경로.mp4
-    python test_runner.py --video 영상경로.mp4 --calib 캘리브레이션영상경로.mp4
-    python test_runner.py --video 영상경로.mp4 --sway 0.05 --fidget 0.02 --gaze 0.05
-    python test_runner.py --video 영상경로.mp4 --skip voice fluency
-"""
-
 import argparse
 import base64
 import os
