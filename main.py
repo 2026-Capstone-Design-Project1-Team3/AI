@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from gaze_calibration import calculate_calibration_values
 from realtime_voice import analyze_speed
+from report_model import generate_report
 app = FastAPI()
 
 @app.websocket("/ws/analysis")
