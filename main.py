@@ -3,20 +3,17 @@ from gaze_calibration import calculate_calibration_values
 from realtime_voice import analyze_speed
 from report_model import generate_report
 from pydantic import BaseModel
-from report_model import generate_report
 import asyncio, os, httpx
 from jose import jwt, JWTError
 
 app = FastAPI()
 
-
-SPRING_SERVER_URL = os.getenv("SPRING_SERVER_URL", "http://localhost:8000")
-INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
-S3_BUCKET = os.getenv("S3_BUCKET", "")
-AWS_REGION = os.getenv("AWS_REGION","ap-northeast-2")
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY", "")
-AWS_SECRET_KEY = os.getenv("AWS_SECRET_KEY", "")
-
+SPRING_SERVER_URL = os.getenv("SPRING_SERVER_URL", "http://localhost:8080")
+INTERNAL_SECRET   = os.getenv("INTERNAL_SECRET", "")
+S3_BUCKET         = os.getenv("S3_BUCKET", "")
+AWS_REGION        = os.getenv("AWS_REGION", "ap-northeast-2")
+AWS_ACCESS_KEY    = os.getenv("AWS_ACCESS_KEY", "")
+AWS_SECRET_KEY    = os.getenv("AWS_SECRET_KEY", "")
 
 PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5zQYcQlkX7tiETUEReTu
@@ -27,134 +24,129 @@ Tb6FLLNJWQE1DauL8QFqzQDKuCygJi9NqZF4z+VP8oboMplGbGiq20L2oshg8NG0
 jIjYARh9nHEsfKClU3kW00FRTzn+S4SLIApF3Nbt+rxxGgXxkLSAm0sSEN/WGRnG
 mwIDAQAB
 -----END PUBLIC KEY-----"""
-@app.websocket("/ws/analysis")
 
+
+@app.websocket("/ws/analysis")
 async def websocket_data(
-    websocket: WebSocket,
-    forderId: str,
-    token: str,
-    leftEyeOffset: float = 0.0,
-    rightEyeOffet: float = 0.0,
-    ratio: float = 0.0
+    websocket     : WebSocket,
+    folderId      : str,
+    token         : str,
+    leftEyeOffset : float = 0.0,
+    rightEyeOffset: float = 0.0,
+    ratio         : float = 0.0,
 ):
     await websocket.accept()
-    # token 검증 로직
+
     try:
         while True:
             data = await websocket.receive_json()
 
             if data["type"] == "VIDEO_CHUNK":
-                score = analyze_speed(data["VideoData"])
+                score = analyze_speed(data["videoData"])
 
                 await websocket.send_json({
-                    "type": "SPEED_RESULT",
+                    "type"       : "SPEED_RESULT",
                     "currentTime": data["currentTime"],
-                    "speedScore": score
+                    "speedScore" : score,
                 })
 
-
-            if data["type"] == "CALIBRATION_CHUNK":
-                calib = calculate_calibration_values(data["VideoData"])
+            elif data["type"] == "CALIBRATION_CHUNK":
+                calib = calculate_calibration_values(data["videoData"])
 
                 if calib is None:
                     await websocket.send_json({
-                        "type" : "CALIBRATION_DONE",
-                        "success" : False
+                        "type"   : "CALIBRATION_DONE",
+                        "success": False,
                     })
                     continue
 
                 left_ratio, right_ratio, rat = calib
 
-
-
                 asyncio.create_task(
-                    send_eye_calibration(
-                        user_id = get_user_id_from_token(token),
-                        left_offset = left_ratio,
+                    _send_eye_calibration(
+                        user_id      = get_user_id_from_token(token),
+                        left_offset  = left_ratio,
                         right_offset = right_ratio,
-                        ratio = rat,
-
+                        ratio        = rat,
                     )
                 )
+
                 await websocket.send_json({
-                    "type" : "CALIBRATION_DONE",
-                    "success" : True,
+                    "type"          : "CALIBRATION_DONE",
+                    "success"       : True,
                     "leftEyeOffset" : left_ratio,
-                    "rightEyeOffset" : right_ratio,
-                    "ratio" : rat,
+                    "rightEyeOffset": right_ratio,
+                    "ratio"         : rat,
                 })
 
-                
     except WebSocketDisconnect:
         pass
 
 
 class AnalysisRequest(BaseModel):
     analysisId: str
-    fileKey: str
-    type : int
+    fileKey   : str
+    type      : int
     extraInfo : str = ""
+
 
 @app.post("/analysis/start")
 async def analysis_start(
-    req : AnalysisRequest,
+    req              : AnalysisRequest,
     x_internal_secret: str = Header(...),
 ):
     if x_internal_secret != INTERNAL_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
-    
+
     asyncio.create_task(
         run_analysis(
-            analysis_id = req.analysisId,
-            file_key = req.filekey,
+            analysis_id   = req.analysisId,
+            file_key      = req.fileKey,
             analysis_type = req.type,
-            extra_info = req.extraInfo,
+            extra_info    = req.extraInfo,
         )
     )
     return {"status": 200}
 
 
 async def run_analysis(
-        analysis_id : str,
-        file_key : str,
-        analysis_type : int,
-        extra_info : str,
+    analysis_id  : str,
+    file_key     : str,
+    analysis_type: int,
+    extra_info   : str,
 ):
     try:
         video_b64 = await download_from_s3(file_key)
-        script = extra_info if analysis_type == 0 else ""
-        job_info = extra_info if analysis_type == 1 else ""
-
-        l_offset = 0.0
-        r_offset = 0.0
+        script    = extra_info if analysis_type == 0 else ""
 
         result = generate_report(
-            test_id = analysis_id,
-            file_key= file_key,
-            video_b64 = video_b64,
-            script= script,
-            analysis_type= analysis_type,
-            l_offset= l_offset,
-            r_offset= r_offset,
+            test_id       = analysis_id,
+            file_key      = file_key,
+            video_b64     = video_b64,
+            script        = script,
+            analysis_type = analysis_type,
+            l_offset      = 0.0,
+            r_offset      = 0.0,
         )
         await send_result_to_spring(result)
-    
+
     except Exception as e:
-        print(f"[분석오류] {e}")
+        print(f"[분석 오류] {e}")
+
 
 async def download_from_s3(file_key: str) -> str:
     import boto3, base64
 
     s3 = boto3.client(
         "s3",
-        regionregion_name           = AWS_REGION,
+        region_name           = AWS_REGION,
         aws_access_key_id     = AWS_ACCESS_KEY,
         aws_secret_access_key = AWS_SECRET_KEY,
     )
-
     response    = s3.get_object(Bucket=S3_BUCKET, Key=file_key)
     video_bytes = response["Body"].read()
     return base64.b64encode(video_bytes).decode("utf-8")
+
 
 async def send_result_to_spring(result: dict):
     headers = {"X-Internal-Secret": INTERNAL_SECRET}
@@ -166,8 +158,12 @@ async def send_result_to_spring(result: dict):
             timeout = 10,
         )
 
+
 async def _send_eye_calibration(
-    user_id: str, left_offset: float, right_offset: float, ratio: float
+    user_id     : str,
+    left_offset : float,
+    right_offset: float,
+    ratio       : float,
 ):
     headers = {"X-Internal-Secret": INTERNAL_SECRET}
     async with httpx.AsyncClient() as client:
@@ -182,7 +178,6 @@ async def _send_eye_calibration(
             headers = headers,
             timeout = 10,
         )
- 
 
 
 def get_user_id_from_token(token: str) -> str:
@@ -190,9 +185,8 @@ def get_user_id_from_token(token: str) -> str:
         payload = jwt.decode(
             token,
             PUBLIC_KEY,
-            algorithms=["RS256"]
+            algorithms=["RS256"],
         )
         return payload.get("sub", "")
     except JWTError:
         return ""
- 
