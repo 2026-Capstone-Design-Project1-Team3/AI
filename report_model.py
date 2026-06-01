@@ -1,20 +1,3 @@
-
-"""
-사용법:
-    from report_model import generate_report
-
-    result = generate_report(
-        test_id   = "abc123",
-        file_key  = "s3/videos/abc123.webm",
-        video_b64 = video_base64,
-        script    = "백엔드에서 받은 대본 텍스트",  # type=0(발표)일 때
-        analysis_type = 0,  # 0: 발표, 1: 면접
-        l_offset  = 0.0,
-        r_offset  = 0.0,
-    )
-"""
-
-import json
 from voice_model    import analyse_voice_model
 from fluency_model  import analyse_fluency_model
 from gesture_model  import GestureAnalyzer
@@ -22,11 +5,16 @@ from gaze_model     import analyze_gaze_chunk, calculate_gaze_score, calculate_g
 from script_model   import analyse_script_model
 
 import base64, uuid, os
-from moviepy import VideoFileClip
 
 
-SPM_SLOW_MAX    = 4.2 * 60   # 252 SPM 이하 → slow
-SPM_FAST_MIN    = 4.6 * 60   # 276 SPM 이상 → fast
+# ── SPM 기준값 ────────────────────────────────────────────────────
+SPM_SLOW_MAX = 4.2 * 60   # 252 SPM 이하 → slow
+SPM_FAST_MIN = 4.6 * 60   # 276 SPM 이상 → fast
+
+# ── 속도 구간별 점수 ──────────────────────────────────────────────
+SCORE_OPTIMAL = 100
+SCORE_FAST    = 50
+SCORE_SLOW    = 30
 
 
 def _save_temp_video(video_b64: str) -> str:
@@ -67,21 +55,28 @@ def _calc_speed_distribution(interval_analysis: list) -> dict:
 
 
 def _calc_speed_score(interval_analysis: list) -> int:
-    """optimal 비율을 0~100 점수로 변환"""
-    dist = _calc_speed_distribution(interval_analysis)
-    return dist["optimal"]
+    """구간별 점수 평균 (optimal=100, fast=50, slow=30)"""
+    if not interval_analysis:
+        return 0
+
+    scores = []
+    for iv in interval_analysis:
+        spm = iv["spm"]
+        if SPM_SLOW_MAX < spm < SPM_FAST_MIN:
+            scores.append(SCORE_OPTIMAL)
+        elif spm >= SPM_FAST_MIN:
+            scores.append(SCORE_FAST)
+        else:
+            scores.append(SCORE_SLOW)
+
+    return round(sum(scores) / len(scores))
 
 
 def _fluency_level_to_int(level: str) -> int:
-    """안정→2(상), 약간 불안정→1(중), 불안정→0(하)"""
     return {"안정": 2, "약간 불안정": 1, "불안정": 0}.get(level, 1)
 
 
 def _gesture_to_feedback(feedbacks: list) -> tuple[str, str]:
-    """
-    gesture feedbacks → (키워드, 문장)
-    피드백 없으면 긍정 문구 반환
-    """
     if not feedbacks:
         return "안정적", "제스처가 안정적입니다."
 
@@ -96,50 +91,48 @@ def _gesture_to_feedback(feedbacks: list) -> tuple[str, str]:
     return keyword_str, sentence_str
 
 
+def _gaze_to_feedback(gaze_score: int) -> str:
+    if gaze_score >= 80:
+        return "카메라를 잘 응시하고 있습니다."
+    elif gaze_score >= 50:
+        return "카메라 응시가 조금 부족합니다."
+    else:
+        return "카메라를 더 자주 응시해주세요."
+
+
 def generate_report(
     test_id       : str,
     file_key      : str,
     video_b64     : str,
     script        : str,
-    analysis_type : int,   # 0: 발표, 1: 면접
+    analysis_type : int,
     l_offset      : float,
     r_offset      : float,
 ) -> dict:
-    """
-    모든 분석 모델을 실행하고 백엔드 스펙 JSON 반환
-
-    Parameters
-    ----------
-    test_id       : 연습기록 예비 ID (백엔드에서 수신)
-    file_key      : S3 파일 키 (백엔드에서 수신)
-    video_b64     : base64 인코딩된 전체 영상
-    script        : 대본 텍스트 (백엔드에서 수신)
-    analysis_type : 0=발표, 1=면접
-    l_offset      : 시선 캘리브레이션 left offset
-    r_offset      : 시선 캘리브레이션 right offset
-    """
 
     temp_path = _save_temp_video(video_b64)
 
     try:
-        # ── 1. 음성 분석 (Whisper 1회) ────────────────────────────
+        # ── 1. 음성 분석 ──────────────────────────────────────────
         voice_result = analyse_voice_model(video_b64)
         full_text    = voice_result["full_text"]
+        overall_spm  = voice_result["overall_spm"]  # float
 
-        # ── 2. 유창성 + 떨림 분석 (Whisper 재사용) ───────────────
+        # ── 2. 유창성 + 떨림 분석 ─────────────────────────────────
         fluency_result = analyse_fluency_model(video_b64)
         tremor         = fluency_result["tremor"]
 
         # ── 3. 제스처 분석 ────────────────────────────────────────
-        analyzer         = GestureAnalyzer()
-        gesture_data     = analyzer.collect_landmarks(temp_path)
-        gesture_report   = analyzer.generate_report(gesture_data)
+        analyzer       = GestureAnalyzer()
+        gesture_data   = analyzer.collect_landmarks(temp_path)
+        gesture_report = analyzer.generate_report(gesture_data)
         gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
 
         # ── 4. 시선 분석 ──────────────────────────────────────────
         gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset)
         gaze_score    = calculate_gaze_score(gaze_history)
         gaze_dist     = calculate_gaze_distribution(gaze_history)
+        gaze_feedback = _gaze_to_feedback(gaze_score)
 
         # ── 5. 대본 유사도 분석 ───────────────────────────────────
         script_result = analyse_script_model(script, full_text)
@@ -157,12 +150,14 @@ def generate_report(
         _cleanup(temp_path)
 
     return {
-        "testId"                 : test_id,
+        "analysisId"             : test_id,
         "gazeScore"              : gaze_score,
+        "gazeFeedback"           : gaze_feedback,
         "gazeDistribution"       : gaze_dist,
         "fluencyLevel"           : fluency_level,
         "fluencyFeedback"        : fluency_feedback,
         "speedScore"             : speed_score,
+        "speedSpm"               : overall_spm,
         "speedDistribution"      : speed_dist,
         "gestureFeedbackWord"    : gesture_kw,
         "gestureFeedbackSentence": gesture_sentence,
