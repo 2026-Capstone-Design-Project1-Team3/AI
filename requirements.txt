@@ -9,7 +9,7 @@ opencv-python
 moviepy
 
 # AI 모델
-mediapipe==0.10.9
+mediapipe
 faster-whisper
 librosa
 soundfile
