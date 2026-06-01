@@ -23,8 +23,12 @@ def analyze_speed(video_base64):
         cps = char_count / duration
 
         score = calculate_speed_score(cps)
+        sps = round(cps, 2)
 
-        return score
+        return {
+            "speedScore" : score,
+            "spsScore" : sps
+        }    
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)

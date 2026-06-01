@@ -40,12 +40,13 @@ async def websocket_data(
             data = await websocket.receive_json()
 
             if data["type"] == "VIDEO_CHUNK":
-                score = analyze_speed(data["videoData"])
+                result = analyze_speed(data["videoData"])
 
                 await websocket.send_json({
                     "type"       : "SPEED_RESULT",
                     "currentTime": data["currentTime"],
-                    "speedScore" : score,
+                    "speedScore" : result["score"],
+                    "spsScore" : result["spsScore"]
                 })
 
             elif data["type"] == "CALIBRATION_CHUNK":
