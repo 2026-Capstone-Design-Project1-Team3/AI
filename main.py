@@ -3,7 +3,7 @@ from gaze_calibration import calculate_calibration_values
 from realtime_voice import analyze_speed
 from report_model import generate_report
 from pydantic import BaseModel
-import asyncio, os, httpx
+import asyncio, os, httpx, boto3, base64
 from jose import jwt, JWTError
 
 app = FastAPI()
@@ -11,9 +11,7 @@ app = FastAPI()
 SPRING_SERVER_URL = os.getenv("SPRING_SERVER_URL", "http://localhost:8080")
 INTERNAL_SECRET   = os.getenv("INTERNAL_SECRET", "")
 S3_BUCKET         = os.getenv("S3_BUCKET", "")
-AWS_REGION        = os.getenv("AWS_REGION", "ap-northeast-2")
-AWS_ACCESS_KEY    = os.getenv("AWS_ACCESS_KEY", "")
-AWS_SECRET_KEY    = os.getenv("AWS_SECRET_KEY", "")
+AWS_REGION        = os.getenv("AWS_REGION", "ap-south-1")  # Mumbai
 
 PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5zQYcQlkX7tiETUEReTu
@@ -135,14 +133,8 @@ async def run_analysis(
 
 
 async def download_from_s3(file_key: str) -> str:
-    import boto3, base64
-
-    s3 = boto3.client(
-        "s3",
-        region_name           = AWS_REGION,
-        aws_access_key_id     = AWS_ACCESS_KEY,
-        aws_secret_access_key = AWS_SECRET_KEY,
-    )
+    """IAM Role 자동 사용 (Access Key 불필요)"""
+    s3 = boto3.client("s3", region_name=AWS_REGION)
     response    = s3.get_object(Bucket=S3_BUCKET, Key=file_key)
     video_bytes = response["Body"].read()
     return base64.b64encode(video_bytes).decode("utf-8")
