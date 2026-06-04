@@ -1,195 +1,168 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Header, HTTPException
-from gaze_calibration import calculate_calibration_values
-from realtime_voice import analyze_speed
-from report_model import generate_report
-from pydantic import BaseModel
-from typing import Optional
-import asyncio, os, httpx, boto3, base64
-from jose import jwt, JWTError
+from voice_model    import analyse_voice_model
+from fluency_model  import analyse_fluency_model
+from gesture_model  import GestureAnalyzer
+from gaze_model     import analyze_gaze_chunk, calculate_gaze_score, calculate_gaze_distribution
+from script_model   import analyse_script_model
 
-app = FastAPI()
-
-SPRING_SERVER_URL = os.getenv("SPRING_SERVER_URL", "http://localhost:8080")
-INTERNAL_SECRET   = os.getenv("INTERNAL_SECRET", "")
-S3_BUCKET         = os.getenv("S3_BUCKET", "")
-AWS_REGION        = os.getenv("AWS_REGION", "ap-south-1")
-
-PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5zQYcQlkX7tiETUEReTu
-C0jawfwUd4GD8rkjs+KO2V+Ytv4bqA7y4OWZTpsnuHNIidBeWgCJqaC+NWAg2QVk
-NY1FWzTuGYodAY6WqWiSpTf/PkJrvbtyv2nARS3iqkDEdrBfOCCNC5R9vTIoowHw
-2dnVOBOYVSinHL2n0RFSjIrs1WPgP/RzixK4Ye75IMNJt+8yMdr5cLiwpQ6Pp91S
-Tb6FLLNJWQE1DauL8QFqzQDKuCygJi9NqZF4z+VP8oboMplGbGiq20L2oshg8NG0
-jIjYARh9nHEsfKClU3kW00FRTzn+S4SLIApF3Nbt+rxxGgXxkLSAm0sSEN/WGRnG
-mwIDAQAB
------END PUBLIC KEY-----"""
+import base64, uuid, os
 
 
-@app.websocket("/ws/analysis")
-async def websocket_data(
-    websocket     : WebSocket,
-    folderId      : str,
-    token         : str,
-    leftEyeOffset : float = 0.0,
-    rightEyeOffset: float = 0.0,
-    ratio         : float = 0.0,
-):
-    await websocket.accept()
+# ── SPM 기준값 ────────────────────────────────────────────────────
+SPM_SLOW_MAX = 4.2 * 60   # 252 SPM 이하 → slow
+SPM_FAST_MIN = 4.6 * 60   # 276 SPM 이상 → fast
+
+# ── 속도 구간별 점수 ──────────────────────────────────────────────
+SCORE_OPTIMAL = 100
+SCORE_FAST    = 50
+SCORE_SLOW    = 30
+
+
+def _save_temp_video(video_b64: str) -> str:
+    temp_path = f"temp_report_{uuid.uuid4()}.webm"
+    with open(temp_path, "wb") as f:
+        f.write(base64.b64decode(video_b64))
+    return temp_path
+
+
+def _cleanup(path: str):
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _calc_speed_distribution(interval_analysis: list) -> dict:
+    if not interval_analysis:
+        return {"fast": 0, "optimal": 0, "slow": 0}
+
+    fast = optimal = slow = 0
+    for iv in interval_analysis:
+        spm = iv["spm"]
+        if spm >= SPM_FAST_MIN:
+            fast += 1
+        elif spm <= SPM_SLOW_MAX:
+            slow += 1
+        else:
+            optimal += 1
+
+    total = len(interval_analysis)
+    return {
+        "fast"   : round(fast    / total * 100),
+        "optimal": round(optimal / total * 100),
+        "slow"   : round(slow    / total * 100),
+    }
+
+
+def _calc_speed_score(interval_analysis: list) -> int:
+    """구간별 점수 평균 (optimal=100, fast=50, slow=30)"""
+    if not interval_analysis:
+        return 0
+
+    scores = []
+    for iv in interval_analysis:
+        spm = iv["spm"]
+        if SPM_SLOW_MAX < spm < SPM_FAST_MIN:
+            scores.append(SCORE_OPTIMAL)
+        elif spm >= SPM_FAST_MIN:
+            scores.append(SCORE_FAST)
+        else:
+            scores.append(SCORE_SLOW)
+
+    return round(sum(scores) / len(scores))
+
+
+def _fluency_level_to_int(level: str) -> int:
+    return {"안정": 2, "약간 불안정": 1, "불안정": 0}.get(level, 1)
+
+
+def _gesture_to_feedback(feedbacks: list) -> tuple[str, str]:
+    if not feedbacks:
+        return "안정적", "제스처가 안정적입니다."
+
+    keywords = []
+    if any("흔들림" in fb for fb in feedbacks):
+        keywords.append("좌우흔들림")
+    if any("손동작" in fb for fb in feedbacks):
+        keywords.append("손동작산만")
+
+    keyword_str  = ", ".join(keywords) if keywords else "개선필요"
+    sentence_str = " ".join(feedbacks)
+    return keyword_str, sentence_str
+
+
+def _gaze_to_feedback(gaze_score: int) -> str:
+    if gaze_score >= 80:
+        return "카메라를 잘 응시하고 있습니다."
+    elif gaze_score >= 50:
+        return "카메라 응시가 조금 부족합니다."
+    else:
+        return "카메라를 더 자주 응시해주세요."
+
+
+def generate_report(
+    test_id       : str,
+    file_key      : str,
+    video_b64     : str,
+    script        : str,
+    analysis_type : int,
+    l_offset      : float,
+    r_offset      : float,
+) -> dict:
+
+    temp_path = _save_temp_video(video_b64)
 
     try:
-        while True:
-            data = await websocket.receive_json()
+        # ── 1. 음성 분석 ──────────────────────────────────────────
+        voice_result = analyse_voice_model(video_b64)
+        full_text    = voice_result["full_text"]
+        overall_spm  = voice_result["overall_spm"]  # float
 
-            if data["type"] == "VIDEO_CHUNK":
-                score = analyze_speed(data["videoData"])
+        # ── 2. 유창성 + 떨림 분석 ─────────────────────────────────
+        fluency_result = analyse_fluency_model(video_b64)
+        tremor         = fluency_result["tremor"]
 
-                await websocket.send_json({
-                    "type"       : "SPEED_RESULT",
-                    "currentTime": data["currentTime"],
-                    "speedScore" : score,
-                })
+        # ── 3. 제스처 분석 ────────────────────────────────────────
+        analyzer       = GestureAnalyzer()
+        gesture_data   = analyzer.collect_landmarks(temp_path)
+        gesture_report = analyzer.generate_report(gesture_data)
+        gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
 
-            elif data["type"] == "CALIBRATION_CHUNK":
-                calib = calculate_calibration_values(data["videoData"])
+        # ── 4. 시선 분석 ──────────────────────────────────────────
+        gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset)
+        gaze_score    = calculate_gaze_score(gaze_history)
+        gaze_dist     = calculate_gaze_distribution(gaze_history)
+        gaze_feedback = _gaze_to_feedback(gaze_score)
 
-                if calib is None:
-                    await websocket.send_json({
-                        "type"   : "CALIBRATION_DONE",
-                        "success": False,
-                    })
-                    continue
+        # ── 5. 대본 유사도 분석 ───────────────────────────────────
+        script_result = analyse_script_model(script, full_text)
+        final_score   = script_result["similarity_score"]
 
-                left_ratio, right_ratio, rat = calib
+        # ── 6. 속도 분포 / 점수 ──────────────────────────────────
+        speed_dist  = _calc_speed_distribution(voice_result["interval_analysis"])
+        speed_score = _calc_speed_score(voice_result["interval_analysis"])
 
-                asyncio.create_task(
-                    _send_eye_calibration(
-                        user_id      = get_user_id_from_token(token),
-                        left_offset  = left_ratio,
-                        right_offset = right_ratio,
-                        ratio        = rat,
-                    )
-                )
+        # ── 7. 유창성 레벨 → int ─────────────────────────────────
+        fluency_level    = _fluency_level_to_int(tremor["level"])
+        fluency_feedback = " ".join(tremor["feedbacks"])
 
-                await websocket.send_json({
-                    "type"          : "CALIBRATION_DONE",
-                    "success"       : True,
-                    "leftEyeOffset" : left_ratio,
-                    "rightEyeOffset": right_ratio,
-                    "ratio"         : rat,
-                })
+    finally:
+        _cleanup(temp_path)
 
-    except WebSocketDisconnect:
-        pass
-
-
-class EyeCalibration(BaseModel):
-    leftEyeOffset : float = 0.0
-    rightEyeOffset: float = 0.0
-    ratio         : float = 0.0
-
-
-class AnalysisRequest(BaseModel):
-    analysisId     : str
-    fileKey        : str
-    type           : int
-    extraInfo      : str = ""
-    eyeCalibration : EyeCalibration = EyeCalibration()
-
-
-@app.post("/analysis/start")
-async def analysis_start(
-    req              : AnalysisRequest,
-    x_internal_secret: str = Header(...),
-):
-    if x_internal_secret != INTERNAL_SECRET:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    asyncio.create_task(
-        run_analysis(
-            analysis_id   = req.analysisId,
-            file_key      = req.fileKey,
-            analysis_type = req.type,
-            extra_info    = req.extraInfo,
-            l_offset      = req.eyeCalibration.leftEyeOffset,
-            r_offset      = req.eyeCalibration.rightEyeOffset,
-        )
-    )
-    return {"status": 200}
-
-
-async def run_analysis(
-    analysis_id  : str,
-    file_key     : str,
-    analysis_type: int,
-    extra_info   : str,
-    l_offset     : float,
-    r_offset     : float,
-):
-    try:
-        video_b64 = await download_from_s3(file_key)
-        script    = extra_info if analysis_type == 0 else ""
-
-        result = generate_report(
-            test_id       = analysis_id,
-            file_key      = file_key,
-            video_b64     = video_b64,
-            script        = script,
-            analysis_type = analysis_type,
-            l_offset      = l_offset,
-            r_offset      = r_offset,
-        )
-        await send_result_to_spring(result)
-
-    except Exception as e:
-        print(f"[분석 오류] {e}")
-
-
-async def download_from_s3(file_key: str) -> str:
-    s3 = boto3.client("s3", region_name=AWS_REGION)
-    response    = s3.get_object(Bucket=S3_BUCKET, Key=file_key)
-    video_bytes = response["Body"].read()
-    return base64.b64encode(video_bytes).decode("utf-8")
-
-
-async def send_result_to_spring(result: dict):
-    headers = {"X-Internal-Secret": INTERNAL_SECRET}
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{SPRING_SERVER_URL}/analysis",
-            json    = result,
-            headers = headers,
-            timeout = 10,
-        )
-
-
-async def _send_eye_calibration(
-    user_id     : str,
-    left_offset : float,
-    right_offset: float,
-    ratio       : float,
-):
-    headers = {"X-Internal-Secret": INTERNAL_SECRET}
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"{SPRING_SERVER_URL}/user/eye",
-            json={
-                "userId"        : user_id,
-                "leftEyeOffset" : left_offset,
-                "rightEyeOffset": right_offset,
-                "ratio"         : ratio,
-            },
-            headers = headers,
-            timeout = 10,
-        )
-
-
-def get_user_id_from_token(token: str) -> str:
-    try:
-        payload = jwt.decode(
-            token,
-            PUBLIC_KEY,
-            algorithms=["RS256"],
-        )
-        return payload.get("sub", "")
-    except JWTError:
-        return ""
+    return {
+        "analysisId"             : test_id,
+        "gazeScore"              : gaze_score,
+        "gazeFeedback"           : gaze_feedback,
+        "gazeDistribution"       : gaze_dist,
+        "fluencyLevel"           : fluency_level,
+        "fluencyFeedback"        : fluency_feedback,
+        "speedScore"             : speed_score,
+        "speedSpm"               : overall_spm,
+        "speedDistribution"      : speed_dist,
+        "gestureFeedbackWord"    : gesture_kw,
+        "gestureFeedbackSentence": gesture_sentence,
+        "finalScore"             : final_score,
+        "transcript"             : full_text,
+        "fileKey"                : file_key,
+        "type"                   : analysis_type,
+    }

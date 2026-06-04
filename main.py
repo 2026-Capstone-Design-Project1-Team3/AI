@@ -3,6 +3,7 @@ from gaze_calibration import calculate_calibration_values
 from realtime_voice import analyze_speed
 from report_model import generate_report
 from pydantic import BaseModel
+from typing import Optional
 import asyncio, os, httpx, boto3, base64
 from jose import jwt, JWTError
 
@@ -11,7 +12,7 @@ app = FastAPI()
 SPRING_SERVER_URL = os.getenv("SPRING_SERVER_URL", "http://localhost:8080")
 INTERNAL_SECRET   = os.getenv("INTERNAL_SECRET", "")
 S3_BUCKET         = os.getenv("S3_BUCKET", "")
-AWS_REGION        = os.getenv("AWS_REGION", "ap-south-1")  # Mumbai
+AWS_REGION        = os.getenv("AWS_REGION", "ap-south-1")
 
 PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5zQYcQlkX7tiETUEReTu
@@ -40,13 +41,12 @@ async def websocket_data(
             data = await websocket.receive_json()
 
             if data["type"] == "VIDEO_CHUNK":
-                result = analyze_speed(data["videoData"])
+                score = analyze_speed(data["videoData"])
 
                 await websocket.send_json({
                     "type"       : "SPEED_RESULT",
                     "currentTime": data["currentTime"],
-                    "speedScore" : result["score"],
-                    "spsScore" : result["spsScore"]
+                    "speedScore" : score,
                 })
 
             elif data["type"] == "CALIBRATION_CHUNK":
@@ -82,11 +82,18 @@ async def websocket_data(
         pass
 
 
+class EyeCalibration(BaseModel):
+    leftEyeOffset : float = 0.0
+    rightEyeOffset: float = 0.0
+    ratio         : float = 0.0
+
+
 class AnalysisRequest(BaseModel):
-    analysisId: str
-    fileKey   : str
-    type      : int
-    extraInfo : str = ""
+    analysisId     : str
+    fileKey        : str
+    type           : int
+    extraInfo      : str = ""
+    eyeCalibration : EyeCalibration = EyeCalibration()
 
 
 @app.post("/analysis/start")
@@ -103,6 +110,8 @@ async def analysis_start(
             file_key      = req.fileKey,
             analysis_type = req.type,
             extra_info    = req.extraInfo,
+            l_offset      = req.eyeCalibration.leftEyeOffset,
+            r_offset      = req.eyeCalibration.rightEyeOffset,
         )
     )
     return {"status": 200}
@@ -113,6 +122,8 @@ async def run_analysis(
     file_key     : str,
     analysis_type: int,
     extra_info   : str,
+    l_offset     : float,
+    r_offset     : float,
 ):
     try:
         video_b64 = await download_from_s3(file_key)
@@ -124,8 +135,8 @@ async def run_analysis(
             video_b64     = video_b64,
             script        = script,
             analysis_type = analysis_type,
-            l_offset      = 0.0,
-            r_offset      = 0.0,
+            l_offset      = l_offset,
+            r_offset      = r_offset,
         )
         await send_result_to_spring(result)
 
@@ -134,7 +145,6 @@ async def run_analysis(
 
 
 async def download_from_s3(file_key: str) -> str:
-    """IAM Role 자동 사용 (Access Key 불필요)"""
     s3 = boto3.client("s3", region_name=AWS_REGION)
     response    = s3.get_object(Bucket=S3_BUCKET, Key=file_key)
     video_bytes = response["Body"].read()
