@@ -107,7 +107,8 @@ async def analysis_start(
 ):
     if x_internal_secret != INTERNAL_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
-
+    print("[요청 수신] 분석 태스크 생성")
+    
     asyncio.create_task(
         run_analysis(
             analysis_id   = req.analysisId,
