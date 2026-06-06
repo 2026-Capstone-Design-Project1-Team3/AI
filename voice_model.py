@@ -28,8 +28,8 @@ def analyze_silence(all_segments_data, threshold=2.0):
     silence_logs = []
 
     for i in range(1, len(all_segments_data)):
-        prev_end   = all_segments_data[i-1]["end"]
-        curr_start = all_segments_data[i]["start"]
+        prev_end    = all_segments_data[i-1]["end"]
+        curr_start  = all_segments_data[i]["start"]
         silence_gap = curr_start - prev_end
 
         if silence_gap > threshold:
@@ -53,7 +53,13 @@ def analyse_voice_model(video_data_base64, interval_seconds=20):
         total_duration = _get_duration(temp_video_path)
         _extract_audio_ffmpeg(temp_video_path, temp_audio_path)
 
-        segments, info = model.transcribe(temp_audio_path, beam_size=5)
+        # chunk_length로 30초씩 잘라서 처리 → 메모리 절약
+        segments, info = model.transcribe(
+            temp_audio_path,
+            beam_size=5,
+            chunk_length=30,
+            condition_on_previous_text=False
+        )
 
         all_segments_data = []
         total_syllables   = 0
@@ -76,8 +82,8 @@ def analyse_voice_model(video_data_base64, interval_seconds=20):
         interval_speeds = []
 
         for start_time in range(0, int(total_duration), interval_seconds):
-            end_time         = start_time + interval_seconds
-            interval_count   = 0
+            end_time          = start_time + interval_seconds
+            interval_count    = 0
             speaking_duration = 0
 
             for s in all_segments_data:
