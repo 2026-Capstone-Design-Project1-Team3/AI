@@ -70,14 +70,14 @@ def analyse_voice_model(video_data_base64, interval_seconds = 20):
                     interval_count += s["count"]
                     speaking_duration += (s["end"] - s["start"])
 
-            spm = (interval_count /speaking_duration)*60
+            spm = (interval_count / speaking_duration) * 60 if speaking_duration > 0 else 0
 
             interver_speeds.append({
                 "range": f"{start_time}s ~ {end_time}s",
                 "spm": round(spm, 2)
             })
 
-        total_spm = (total_syllables/actual_duration)*60
+        total_spm = (total_syllables / actual_duration) * 60 if actual_duration > 0 else 0
 
         return {
             "overall_spm": round(total_spm, 2),
