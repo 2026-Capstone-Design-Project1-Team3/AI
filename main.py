@@ -145,6 +145,8 @@ async def run_analysis(
 
 
 async def download_from_s3(file_key: str) -> str:
+    import urllib.parse
+    file_key = urllib.parse.unquote(file_key)
     s3 = boto3.client("s3", region_name=AWS_REGION)
     response    = s3.get_object(Bucket=S3_BUCKET, Key=file_key)
     video_bytes = response["Body"].read()
