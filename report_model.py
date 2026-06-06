@@ -1,10 +1,10 @@
-from voice_model    import analyse_voice_model
+from voice_model    import analyse_voice_model_from_path
 from fluency_model  import compute_fluency_from_audio
 from gesture_model  import GestureAnalyzer
-from gaze_model     import analyze_gaze_chunk, calculate_gaze_score, calculate_gaze_distribution
+from gaze_model     import analyze_gaze_chunk_from_path, calculate_gaze_score, calculate_gaze_distribution
 from script_model   import analyse_script_model
 
-import base64, uuid, os, subprocess, gc
+import uuid, os, subprocess, gc
 
 
 SPM_SLOW_MAX = 4.2 * 60
@@ -13,22 +13,6 @@ SPM_FAST_MIN = 4.6 * 60
 SCORE_OPTIMAL = 100
 SCORE_FAST    = 50
 SCORE_SLOW    = 30
-
-
-def _save_temp_video(video_b64: str) -> str:
-    temp_path = f"temp_report_{uuid.uuid4()}.webm"
-    with open(temp_path, "wb") as f:
-        f.write(base64.b64decode(video_b64))
-    return temp_path
-
-
-def _extract_audio_ffmpeg(video_path: str, audio_path: str):
-    subprocess.run([
-        "ffmpeg", "-i", video_path,
-        "-vn", "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        "-y", audio_path
-    ], check=True, capture_output=True)
 
 
 def _cleanup(*paths: str):
@@ -110,40 +94,39 @@ def _gaze_to_feedback(gaze_score: int) -> str:
 def generate_report(
     test_id       : str,
     file_key      : str,
-    video_b64     : str,
+    video_path    : str,   # 파일 경로 직접 받음
     script        : str,
     analysis_type : int,
     l_offset      : float,
     r_offset      : float,
 ) -> dict:
 
-    temp_path  = _save_temp_video(video_b64)
-    temp_audio = f"temp_report_audio_{uuid.uuid4()}.wav"
+    temp_audio = None
 
     try:
-        # ── 1. 음성 분석 (Whisper 1회) ────────────────────────────
-        voice_result      = analyse_voice_model(video_b64)
+        # ── 1. 음성 분석 (Whisper 1회, 파일 경로로) ───────────────
+        voice_result      = analyse_voice_model_from_path(video_path)
         full_text         = voice_result["full_text"]
         overall_spm       = voice_result["overall_spm"]
         all_segments_data = voice_result.get("all_segments_data", [])
+        temp_audio        = voice_result.get("temp_audio_path")  # 오디오 재사용
         gc.collect()
 
-        # ── 2. 유창성 분석 (오디오 추출 후 librosa) ───────────────
-        _extract_audio_ffmpeg(temp_path, temp_audio)
+        # ── 2. 유창성 분석 (오디오 재사용) ───────────────────────
         fluency_result = compute_fluency_from_audio(temp_audio, all_segments_data)
         tremor         = fluency_result["tremor"]
         gc.collect()
 
         # ── 3. 제스처 분석 ────────────────────────────────────────
         analyzer       = GestureAnalyzer()
-        gesture_data   = analyzer.collect_landmarks(temp_path)
+        gesture_data   = analyzer.collect_landmarks(video_path)
         gesture_report = analyzer.generate_report(gesture_data)
         gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
         del gesture_data
         gc.collect()
 
         # ── 4. 시선 분석 ──────────────────────────────────────────
-        gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset, sample_interval=5)
+        gaze_history  = analyze_gaze_chunk_from_path(video_path, l_offset, r_offset)
         gaze_score    = calculate_gaze_score(gaze_history)
         gaze_dist     = calculate_gaze_distribution(gaze_history)
         gaze_feedback = _gaze_to_feedback(gaze_score)
@@ -164,7 +147,7 @@ def generate_report(
         fluency_feedback = " ".join(tremor["feedbacks"])
 
     finally:
-        _cleanup(temp_path, temp_audio)
+        _cleanup(temp_audio)
         gc.collect()
 
     return {

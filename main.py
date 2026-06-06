@@ -3,8 +3,7 @@ from gaze_calibration import calculate_calibration_values
 from realtime_voice import analyze_speed
 from report_model import generate_report
 from pydantic import BaseModel
-from typing import Optional
-import asyncio, os, httpx, boto3, base64
+import asyncio, os, httpx, boto3, uuid
 from jose import jwt, JWTError
 
 app = FastAPI()
@@ -50,36 +49,38 @@ async def websocket_data(
                     })
                 except Exception as e:
                     print(f"[속도 분석 오류] {e}")
-                    
 
             elif data["type"] == "CALIBRATION_CHUNK":
-                calib = calculate_calibration_values(data["videoData"])
+                try:
+                    calib = calculate_calibration_values(data["videoData"])
 
-                if calib is None:
-                    await websocket.send_json({
-                        "type"   : "CALIBRATION_DONE",
-                        "success": False,
-                    })
-                    continue
+                    if calib is None:
+                        await websocket.send_json({
+                            "type"   : "CALIBRATION_DONE",
+                            "success": False,
+                        })
+                        continue
 
-                left_ratio, right_ratio, rat = calib
+                    left_ratio, right_ratio, rat = calib
 
-                asyncio.create_task(
-                    _send_eye_calibration(
-                        user_id      = get_user_id_from_token(token),
-                        left_offset  = left_ratio,
-                        right_offset = right_ratio,
-                        ratio        = rat,
+                    asyncio.create_task(
+                        _send_eye_calibration(
+                            user_id      = get_user_id_from_token(token),
+                            left_offset  = left_ratio,
+                            right_offset = right_ratio,
+                            ratio        = rat,
+                        )
                     )
-                )
 
-                await websocket.send_json({
-                    "type"          : "CALIBRATION_DONE",
-                    "success"       : True,
-                    "leftEyeOffset" : left_ratio,
-                    "rightEyeOffset": right_ratio,
-                    "ratio"         : rat,
-                })
+                    await websocket.send_json({
+                        "type"          : "CALIBRATION_DONE",
+                        "success"       : True,
+                        "leftEyeOffset" : left_ratio,
+                        "rightEyeOffset": right_ratio,
+                        "ratio"         : rat,
+                    })
+                except Exception as e:
+                    print(f"[캘리브레이션 오류] {e}")
 
     except WebSocketDisconnect:
         pass
@@ -92,11 +93,11 @@ class EyeCalibration(BaseModel):
 
 
 class AnalysisRequest(BaseModel):
-    analysisId     : str
-    fileKey        : str
-    type           : int
-    extraInfo      : str = ""
-    eyeCalibration : EyeCalibration = EyeCalibration()
+    analysisId    : str
+    fileKey       : str
+    type          : int
+    extraInfo     : str = ""
+    eyeCalibration: EyeCalibration = EyeCalibration()
 
 
 @app.post("/analysis/start")
@@ -128,14 +129,16 @@ async def run_analysis(
     l_offset     : float,
     r_offset     : float,
 ):
+    video_path = None
     try:
-        video_b64 = await download_from_s3(file_key)
-        script    = extra_info if analysis_type == 0 else ""
+        # S3에서 파일로 직접 다운로드 (base64 변환 없음)
+        video_path = await download_from_s3_to_file(file_key)
+        script     = extra_info if analysis_type == 0 else ""
 
         result = generate_report(
             test_id       = analysis_id,
             file_key      = file_key,
-            video_b64     = video_b64,
+            video_path    = video_path,
             script        = script,
             analysis_type = analysis_type,
             l_offset      = l_offset,
@@ -145,15 +148,19 @@ async def run_analysis(
 
     except Exception as e:
         print(f"[분석 오류] {e}")
+    finally:
+        if video_path and os.path.exists(video_path):
+            os.remove(video_path)
 
 
-async def download_from_s3(file_key: str) -> str:
+async def download_from_s3_to_file(file_key: str) -> str:
     import urllib.parse
-    file_key = urllib.parse.unquote(file_key)
+    file_key   = urllib.parse.unquote(file_key)
+    temp_path  = f"temp_s3_{uuid.uuid4()}.webm"
+
     s3 = boto3.client("s3", region_name=AWS_REGION)
-    response    = s3.get_object(Bucket=S3_BUCKET, Key=file_key)
-    video_bytes = response["Body"].read()
-    return base64.b64encode(video_bytes).decode("utf-8")
+    s3.download_file(S3_BUCKET, file_key, temp_path)
+    return temp_path
 
 
 async def send_result_to_spring(result: dict):
