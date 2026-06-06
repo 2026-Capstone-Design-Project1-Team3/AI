@@ -8,8 +8,7 @@ import librosa
 from faster_whisper import WhisperModel
 
 from voice_model import analyze_silence
-
-_whisper = WhisperModel("base", device="cpu", compute_type="int8")
+from voice_model import model as _whisper
 
 TREMOR_PITCH_STD_THRESHOLD = 25.0
 TREMOR_ENERGY_CV_THRESHOLD = 0.55

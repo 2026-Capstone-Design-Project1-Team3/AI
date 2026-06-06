@@ -41,13 +41,16 @@ async def websocket_data(
             data = await websocket.receive_json()
 
             if data["type"] == "VIDEO_CHUNK":
-                score = analyze_speed(data["videoData"])
-
-                await websocket.send_json({
-                    "type"       : "SPEED_RESULT",
-                    "currentTime": data["currentTime"],
-                    "speedScore" : score,
-                })
+                try:
+                    score = analyze_speed(data["videoData"])
+                    await websocket.send_json({
+                        "type"       : "SPEED_RESULT",
+                        "currentTime": data["currentTime"],
+                        "speedScore" : score,
+                    })
+                except Exception as e:
+                    print(f"[속도 분석 오류] {e}")
+                    
 
             elif data["type"] == "CALIBRATION_CHUNK":
                 calib = calculate_calibration_values(data["videoData"])

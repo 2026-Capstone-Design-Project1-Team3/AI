@@ -4,7 +4,7 @@ from gesture_model  import GestureAnalyzer
 from gaze_model     import analyze_gaze_chunk, calculate_gaze_score, calculate_gaze_distribution
 from script_model   import analyse_script_model
 
-import base64, uuid, os, subprocess
+import base64, uuid, os, subprocess, gc
 
 
 SPM_SLOW_MAX = 4.2 * 60
@@ -126,27 +126,34 @@ def generate_report(
         full_text         = voice_result["full_text"]
         overall_spm       = voice_result["overall_spm"]
         all_segments_data = voice_result.get("all_segments_data", [])
+        gc.collect()
 
         # ── 2. 유창성 분석 (오디오 추출 후 librosa) ───────────────
         _extract_audio_ffmpeg(temp_path, temp_audio)
         fluency_result = compute_fluency_from_audio(temp_audio, all_segments_data)
         tremor         = fluency_result["tremor"]
+        gc.collect()
 
         # ── 3. 제스처 분석 ────────────────────────────────────────
         analyzer       = GestureAnalyzer()
         gesture_data   = analyzer.collect_landmarks(temp_path)
         gesture_report = analyzer.generate_report(gesture_data)
         gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
+        del gesture_data
+        gc.collect()
 
         # ── 4. 시선 분석 ──────────────────────────────────────────
         gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset, sample_interval=5)
         gaze_score    = calculate_gaze_score(gaze_history)
         gaze_dist     = calculate_gaze_distribution(gaze_history)
         gaze_feedback = _gaze_to_feedback(gaze_score)
+        del gaze_history
+        gc.collect()
 
         # ── 5. 대본 유사도 분석 ───────────────────────────────────
         script_result = analyse_script_model(script, full_text)
         final_score   = script_result["similarity_score"]
+        gc.collect()
 
         # ── 6. 속도 분포 / 점수 ──────────────────────────────────
         speed_dist  = _calc_speed_distribution(voice_result["interval_analysis"])
@@ -158,6 +165,7 @@ def generate_report(
 
     finally:
         _cleanup(temp_path, temp_audio)
+        gc.collect()
 
     return {
         "analysisId"             : test_id,
