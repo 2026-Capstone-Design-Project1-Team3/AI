@@ -131,8 +131,9 @@ async def run_analysis(
 ):
     video_path = None
     try:
-        # S3에서 파일로 직접 다운로드 (base64 변환 없음)
+        print("[S3] 영상 다운로드 시작")
         video_path = await download_from_s3_to_file(file_key)
+        print("[S3] 영상 다운로드 완료")
         script     = extra_info if analysis_type == 0 else ""
 
         result = generate_report(
@@ -144,7 +145,10 @@ async def run_analysis(
             l_offset      = l_offset,
             r_offset      = r_offset,
         )
+        print("[결과] Spring 전송 시작")
         await send_result_to_spring(result)
+        print("[결과] Spring 전송 완료")
+
 
     except Exception as e:
         import traceback
