@@ -94,7 +94,7 @@ def _gaze_to_feedback(gaze_score: int) -> str:
 def generate_report(
     test_id       : str,
     file_key      : str,
-    video_path    : str,   # 파일 경로 직접 받음
+    video_path    : str,
     script        : str,
     analysis_type : int,
     l_offset      : float,
@@ -104,45 +104,48 @@ def generate_report(
     temp_audio = None
 
     try:
-        # ── 1. 음성 분석 (Whisper 1회, 파일 경로로) ───────────────
+        print("[1] 음성 분석 시작")
         voice_result      = analyse_voice_model_from_path(video_path)
         full_text         = voice_result["full_text"]
         overall_spm       = voice_result["overall_spm"]
         all_segments_data = voice_result.get("all_segments_data", [])
-        temp_audio        = voice_result.get("temp_audio_path")  # 오디오 재사용
+        temp_audio        = voice_result.get("temp_audio_path")
+        print("[1] 음성 분석 완료")
         gc.collect()
 
-        # ── 2. 유창성 분석 (오디오 재사용) ───────────────────────
+        print("[2] 유창성 분석 시작")
         fluency_result = compute_fluency_from_audio(temp_audio, all_segments_data)
         tremor         = fluency_result["tremor"]
+        print("[2] 유창성 분석 완료")
         gc.collect()
 
-        # ── 3. 제스처 분석 ────────────────────────────────────────
+        print("[3] 제스처 분석 시작")
         analyzer       = GestureAnalyzer()
         gesture_data   = analyzer.collect_landmarks(video_path)
         gesture_report = analyzer.generate_report(gesture_data)
         gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
         del gesture_data
+        print("[3] 제스처 분석 완료")
         gc.collect()
 
-        # ── 4. 시선 분석 ──────────────────────────────────────────
+        print("[4] 시선 분석 시작")
         gaze_history  = analyze_gaze_chunk_from_path(video_path, l_offset, r_offset)
         gaze_score    = calculate_gaze_score(gaze_history)
         gaze_dist     = calculate_gaze_distribution(gaze_history)
         gaze_feedback = _gaze_to_feedback(gaze_score)
         del gaze_history
+        print("[4] 시선 분석 완료")
         gc.collect()
 
-        # ── 5. 대본 유사도 분석 ───────────────────────────────────
+        print("[5] 대본 유사도 분석 시작")
         script_result = analyse_script_model(script, full_text)
         final_score   = script_result["similarity_score"]
+        print("[5] 대본 유사도 분석 완료")
         gc.collect()
 
-        # ── 6. 속도 분포 / 점수 ──────────────────────────────────
         speed_dist  = _calc_speed_distribution(voice_result["interval_analysis"])
         speed_score = _calc_speed_score(voice_result["interval_analysis"])
 
-        # ── 7. 유창성 레벨 → int ─────────────────────────────────
         fluency_level    = _fluency_level_to_int(tremor["level"])
         fluency_feedback = " ".join(tremor["feedbacks"])
 
@@ -150,6 +153,7 @@ def generate_report(
         _cleanup(temp_audio)
         gc.collect()
 
+    print("[완료] 결과 반환")
     return {
         "analysisId"             : test_id,
         "gazeScore"              : gaze_score,
