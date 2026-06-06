@@ -86,7 +86,8 @@ def analyse_voice_model(video_data_base64, interval_seconds = 20):
             "total_duration" : round(total_duration, 2),
             "interval_analysis": interver_speeds,
             "full_text": ". ".join([s["text"] for s in all_segments_data]),
-            "silence_log" : analyze_silence(all_segments_data)
+            "silence_log" : analyze_silence(all_segments_data),
+            "all_segments_data" : all_segments_data,
         }
 
 

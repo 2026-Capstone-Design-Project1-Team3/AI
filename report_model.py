@@ -1,17 +1,18 @@
 from voice_model    import analyse_voice_model
-from fluency_model  import analyse_fluency_model
+from fluency_model  import _compute_tremor, _extract_audio, _cleanup
 from gesture_model  import GestureAnalyzer
 from gaze_model     import analyze_gaze_chunk, calculate_gaze_score, calculate_gaze_distribution
 from script_model   import analyse_script_model
+from voice_model    import analyze_silence
 
 import base64, uuid, os
+import librosa
 
 
 # ── SPM 기준값 ────────────────────────────────────────────────────
-SPM_SLOW_MAX = 4.2 * 60   # 252 SPM 이하 → slow
-SPM_FAST_MIN = 4.6 * 60   # 276 SPM 이상 → fast
+SPM_SLOW_MAX = 4.2 * 60
+SPM_FAST_MIN = 4.6 * 60
 
-# ── 속도 구간별 점수 ──────────────────────────────────────────────
 SCORE_OPTIMAL = 100
 SCORE_FAST    = 50
 SCORE_SLOW    = 30
@@ -24,7 +25,7 @@ def _save_temp_video(video_b64: str) -> str:
     return temp_path
 
 
-def _cleanup(path: str):
+def _cleanup_path(path: str):
     if path and os.path.exists(path):
         try:
             os.remove(path)
@@ -55,7 +56,6 @@ def _calc_speed_distribution(interval_analysis: list) -> dict:
 
 
 def _calc_speed_score(interval_analysis: list) -> int:
-    """구간별 점수 평균 (optimal=100, fast=50, slow=30)"""
     if not interval_analysis:
         return 0
 
@@ -111,43 +111,50 @@ def generate_report(
 ) -> dict:
 
     temp_path = _save_temp_video(video_b64)
+    temp_video_audio = None
+    temp_audio = None
 
     try:
-        # ── 1. 음성 분석 ──────────────────────────────────────────
+        # ── 1. 오디오 추출 (1회) ──────────────────────────────────
+        temp_video_audio, temp_audio, _ = _extract_audio(video_b64)
+
+        # ── 2. 음성 분석 (Whisper 1회) ────────────────────────────
         voice_result = analyse_voice_model(video_b64)
         full_text    = voice_result["full_text"]
-        overall_spm  = voice_result["overall_spm"]  # float
+        overall_spm  = voice_result["overall_spm"]
 
-        # ── 2. 유창성 + 떨림 분석 ─────────────────────────────────
-        fluency_result = analyse_fluency_model(video_b64)
-        tremor         = fluency_result["tremor"]
+        # ── 3. 유창성 분석 (librosa, Whisper 재사용) ──────────────
+        y, sr = librosa.load(temp_audio, sr=None)
+        tremor = _compute_tremor(y, sr)
+        silence_result = analyze_silence(voice_result.get("all_segments_data", []))
 
-        # ── 3. 제스처 분석 ────────────────────────────────────────
+        # ── 4. 제스처 분석 ────────────────────────────────────────
         analyzer       = GestureAnalyzer()
         gesture_data   = analyzer.collect_landmarks(temp_path)
         gesture_report = analyzer.generate_report(gesture_data)
         gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
 
-        # ── 4. 시선 분석 ──────────────────────────────────────────
+        # ── 5. 시선 분석 ──────────────────────────────────────────
         gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset)
         gaze_score    = calculate_gaze_score(gaze_history)
         gaze_dist     = calculate_gaze_distribution(gaze_history)
         gaze_feedback = _gaze_to_feedback(gaze_score)
 
-        # ── 5. 대본 유사도 분석 ───────────────────────────────────
+        # ── 6. 대본 유사도 분석 ───────────────────────────────────
         script_result = analyse_script_model(script, full_text)
         final_score   = script_result["similarity_score"]
 
-        # ── 6. 속도 분포 / 점수 ──────────────────────────────────
+        # ── 7. 속도 분포 / 점수 ──────────────────────────────────
         speed_dist  = _calc_speed_distribution(voice_result["interval_analysis"])
         speed_score = _calc_speed_score(voice_result["interval_analysis"])
 
-        # ── 7. 유창성 레벨 → int ─────────────────────────────────
+        # ── 8. 유창성 레벨 → int ─────────────────────────────────
         fluency_level    = _fluency_level_to_int(tremor["level"])
         fluency_feedback = " ".join(tremor["feedbacks"])
 
     finally:
-        _cleanup(temp_path)
+        _cleanup_path(temp_path)
+        _cleanup(temp_video_audio, temp_audio)
 
     return {
         "analysisId"             : test_id,
