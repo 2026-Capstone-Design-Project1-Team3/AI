@@ -147,7 +147,9 @@ async def run_analysis(
         await send_result_to_spring(result)
 
     except Exception as e:
+        import traceback
         print(f"[분석 오류] {e}")
+        print(traceback.format_exc())
     finally:
         if video_path and os.path.exists(video_path):
             os.remove(video_path)
