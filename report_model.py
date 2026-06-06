@@ -130,7 +130,7 @@ def generate_report(
         gesture_kw, gesture_sentence = _gesture_to_feedback(gesture_report["feedbacks"])
 
         # ── 4. 시선 분석 ──────────────────────────────────────────
-        gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset)
+        gaze_history  = analyze_gaze_chunk(video_b64, l_offset, r_offset, sample_interval= 5)
         gaze_score    = calculate_gaze_score(gaze_history)
         gaze_dist     = calculate_gaze_distribution(gaze_history)
         gaze_feedback = _gaze_to_feedback(gaze_score)

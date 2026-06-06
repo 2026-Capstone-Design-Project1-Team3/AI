@@ -23,10 +23,17 @@ class GestureAnalyzer:
 
         prev_wrists = None
         try:
+            frame_idx = 0
             while cap.isOpened():
                 ret,frame = cap.read()
                 if not ret: break
 
+                if frame_idx % 5 != 0:
+                    frame_idx += 1
+                    continue
+
+                frame_idx += 1
+                
                 frame_rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
                 results = self.pose.process(frame_rgb)
 
