@@ -1,10 +1,10 @@
 import os
 import base64
 import uuid
+import subprocess
 
 import numpy as np
 import librosa
-from moviepy import VideoFileClip
 from faster_whisper import WhisperModel
 
 from voice_model import analyze_silence
@@ -16,21 +16,13 @@ TREMOR_ENERGY_CV_THRESHOLD = 0.55
 TREMOR_JITTER_THRESHOLD    = 0.03
 
 
-def _extract_audio(video_base64: str) -> tuple[str, str, float]:
-    uid = uuid.uuid4()
-    temp_video = f"temp_fluency_video_{uid}.webm"
-    temp_audio = f"temp_fluency_audio_{uid}.wav"
-
-    video_bytes = base64.b64decode(video_base64)
-    with open(temp_video, "wb") as f:
-        f.write(video_bytes)
-
-    clip = VideoFileClip(temp_video)
-    total_duration = clip.duration
-    clip.audio.write_audiofile(temp_audio, codec="pcm_s16le", logger=None)
-    clip.close()
-
-    return temp_video, temp_audio, total_duration
+def _extract_audio_ffmpeg(video_path: str, audio_path: str):
+    subprocess.run([
+        "ffmpeg", "-i", video_path,
+        "-vn", "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-y", audio_path
+    ], check=True, capture_output=True)
 
 
 def _cleanup(*paths: str):
@@ -107,6 +99,7 @@ def _tremor_feedback(pitch_std, energy_cv, jitter):
 
 
 def compute_fluency_from_audio(temp_audio: str, all_segments_data: list) -> dict:
+    """voice_model에서 추출한 오디오 재사용"""
     y, sr = librosa.load(temp_audio, sr=None)
     tremor_result  = _compute_tremor(y, sr)
     silence_result = analyze_silence(all_segments_data)
@@ -118,9 +111,18 @@ def compute_fluency_from_audio(temp_audio: str, all_segments_data: list) -> dict
 
 
 def analyse_fluency_model(video_base64: str) -> dict:
-    temp_video, temp_audio, _ = _extract_audio(video_base64)
+    """단독 호출용"""
+    uid        = uuid.uuid4()
+    temp_video = f"temp_fluency_video_{uid}.webm"
+    temp_audio = f"temp_fluency_audio_{uid}.wav"
+
+    video_bytes = base64.b64decode(video_base64)
+    with open(temp_video, "wb") as f:
+        f.write(video_bytes)
 
     try:
+        _extract_audio_ffmpeg(temp_video, temp_audio)
+
         segments_iter, _ = _whisper.transcribe(temp_audio, beam_size=5)
         all_segments_data = [
             {
