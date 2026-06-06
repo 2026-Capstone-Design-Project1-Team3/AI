@@ -29,6 +29,8 @@ def analyse_voice_model(video_data_base64, interval_seconds = 20):
     temp_audio_path = f"temp_{uuid.uuid4()}.wav"
 
     result = 0
+    video = None
+
     try:
         with open(temp_video_path, "wb") as f:
             f.write(video_bytes)
@@ -89,6 +91,8 @@ def analyse_voice_model(video_data_base64, interval_seconds = 20):
 
 
     finally:
-        video.close()
+        if video:
+            video.close()
+        
         if os.path.exists(temp_video_path): os.remove(temp_video_path)
         if os.path.exists(temp_audio_path) : os.remove(temp_audio_path)
