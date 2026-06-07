@@ -1,0 +1,26 @@
+fastapi
+uvicorn
+websockets
+httpx
+pydantic
+
+# 영상/오디오 처리
+opencv-python
+moviepy
+
+# AI 모델
+mediapipe==0.10.14
+faster-whisper
+librosa
+soundfile
+
+# 유사도 분석
+sentence-transformers
+scikit-learn
+
+# AWS S3
+boto3
+
+# JWT 검증
+PyJWT
+python-jose

@@ -1,39 +1,27 @@
 import os
 import base64
 import uuid
+import subprocess
 
 import numpy as np
 import librosa
-from moviepy import VideoFileClip
 from faster_whisper import WhisperModel
 
-from voice_model import analyze_silence  # 침묵 분석 재사용
+from voice_model import analyze_silence
+from voice_model import model as _whisper
 
-_whisper = WhisperModel("base", device="cpu", compute_type="int8")
-
-
-# 임계값... 테스트 돌려보고 조절하기
-TREMOR_PITCH_STD_THRESHOLD = 25.0   # Hz  : 피치 표준편차
-TREMOR_ENERGY_CV_THRESHOLD = 0.55   # 무차원: 에너지 변동계수
-TREMOR_JITTER_THRESHOLD    = 0.03   # 3%  : 프레임 간 피치 흔들림
+TREMOR_PITCH_STD_THRESHOLD = 25.0
+TREMOR_ENERGY_CV_THRESHOLD = 0.55
+TREMOR_JITTER_THRESHOLD    = 0.03
 
 
-
-def _extract_audio(video_base64: str) -> tuple[str, str, float]:
-    uid = uuid.uuid4()
-    temp_video = f"temp_fluency_video_{uid}.webm"
-    temp_audio = f"temp_fluency_audio_{uid}.wav"
-
-    video_bytes = base64.b64decode(video_base64)
-    with open(temp_video, "wb") as f:
-        f.write(video_bytes)
-
-    clip = VideoFileClip(temp_video)
-    total_duration = clip.duration
-    clip.audio.write_audiofile(temp_audio, codec="pcm_s16le", logger=None)
-    clip.close()
-
-    return temp_video, temp_audio, total_duration
+def _extract_audio_ffmpeg(video_path: str, audio_path: str):
+    subprocess.run([
+        "ffmpeg", "-i", video_path,
+        "-vn", "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-y", audio_path
+    ], check=True, capture_output=True)
 
 
 def _cleanup(*paths: str):
@@ -45,9 +33,7 @@ def _cleanup(*paths: str):
                 pass
 
 
-
 def _compute_tremor(y: np.ndarray, sr: int) -> dict:
-
     f0, voiced_flag, _ = librosa.pyin(
         y,
         fmin=librosa.note_to_hz("C2"),
@@ -65,7 +51,6 @@ def _compute_tremor(y: np.ndarray, sr: int) -> dict:
 
     pitch_std = float(np.std(voiced_f0))
     jitter    = float(np.mean(np.abs(np.diff(voiced_f0))) / np.mean(voiced_f0))
-
     rms       = librosa.feature.rms(y=y)[0]
     energy_cv = float(np.std(rms) / (np.mean(rms) + 1e-8))
 
@@ -93,17 +78,11 @@ def _tremor_feedback(pitch_std, energy_cv, jitter):
     feedbacks = []
 
     if pitch_std > TREMOR_PITCH_STD_THRESHOLD:
-        feedbacks.append(
-            f"음 높낮이 변동이 큽니다 (std={pitch_std:.1f} Hz) "
-        )
+        feedbacks.append(f"음 높낮이 변동이 큽니다 (std={pitch_std:.1f} Hz) ")
     if energy_cv > TREMOR_ENERGY_CV_THRESHOLD:
-        feedbacks.append(
-            "목소리 크기가 불규칙합니다 "
-        )
+        feedbacks.append("목소리 크기가 불규칙합니다 ")
     if jitter > TREMOR_JITTER_THRESHOLD:
-        feedbacks.append(
-            f"피치 흔들림(jitter={jitter*100:.1f}%)이 감지됩니다 "
-        )
+        feedbacks.append(f"피치 흔들림(jitter={jitter*100:.1f}%)이 감지됩니다 ")
 
     count = sum([
         pitch_std  > TREMOR_PITCH_STD_THRESHOLD,
@@ -118,12 +97,31 @@ def _tremor_feedback(pitch_std, energy_cv, jitter):
     return level, feedbacks
 
 
+def compute_fluency_from_audio(temp_audio: str, all_segments_data: list) -> dict:
+    """voice_model에서 추출한 오디오 재사용"""
+    y, sr = librosa.load(temp_audio, sr=None)
+    tremor_result  = _compute_tremor(y, sr)
+    silence_result = analyze_silence(all_segments_data)
+
+    return {
+        "tremor" : tremor_result,
+        "silence": silence_result,
+    }
+
 
 def analyse_fluency_model(video_base64: str) -> dict:
-    temp_video, temp_audio, _ = _extract_audio(video_base64)
+    """단독 호출용"""
+    uid        = uuid.uuid4()
+    temp_video = f"temp_fluency_video_{uid}.webm"
+    temp_audio = f"temp_fluency_audio_{uid}.wav"
+
+    video_bytes = base64.b64decode(video_base64)
+    with open(temp_video, "wb") as f:
+        f.write(video_bytes)
 
     try:
-        # Whisper — 세그먼트 타임스탬프 추출
+        _extract_audio_ffmpeg(temp_video, temp_audio)
+
         segments_iter, _ = _whisper.transcribe(temp_audio, beam_size=5)
         all_segments_data = [
             {
@@ -135,11 +133,9 @@ def analyse_fluency_model(video_base64: str) -> dict:
             for s in segments_iter
         ]
 
-        # librosa — 오디오 배열 로드
         y, sr = librosa.load(temp_audio, sr=None)
-
         tremor_result  = _compute_tremor(y, sr)
-        silence_result = analyze_silence(all_segments_data)  # voice_model 함수 그대로 재사용
+        silence_result = analyze_silence(all_segments_data)
 
     finally:
         _cleanup(temp_video, temp_audio)

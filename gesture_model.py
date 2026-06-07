@@ -23,10 +23,17 @@ class GestureAnalyzer:
 
         prev_wrists = None
         try:
+            frame_idx = 0
             while cap.isOpened():
                 ret,frame = cap.read()
                 if not ret: break
 
+                if frame_idx % 5 != 0:
+                    frame_idx += 1
+                    continue
+
+                frame_idx += 1
+                
                 frame_rgb = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
                 results = self.pose.process(frame_rgb)
 
@@ -57,7 +64,7 @@ class GestureAnalyzer:
 
         feedbacks = []
         if sway_score > 0.05: # 테스트 여러 개 돌려보고 임계값 조절하기
-            feedbacks.append("좌우로 움직임이 많음")
+            feedbacks.append("좌우로 흔들림이 많음")
         if fidget_score > 0.03:
             feedbacks.append("손동작이 산만함")
         
