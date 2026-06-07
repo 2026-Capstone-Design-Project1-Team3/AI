@@ -21,7 +21,24 @@ def _get_duration(video_path: str) -> float:
         "-of", "csv=p=0",
         video_path
     ], capture_output=True, text=True)
-    return float(result.stdout.strip())
+    
+    duration_str = result.stdout.strip()
+    if duration_str and duration_str != 'N/A':
+        return float(duration_str)
+    
+    result2 = subprocess.run([
+        "ffprobe", "-v", "quiet",
+        "-show_entries", "stream=duration",
+        "-of", "csv=p=0",
+        video_path
+    ], capture_output=True, text=True)
+    
+    for line in result2.stdout.strip().split('\n'):
+        line = line.strip()
+        if line and line != 'N/A':
+            return float(line)
+    
+    return 0.0
 
 
 def analyze_silence(all_segments_data, threshold=2.0):
