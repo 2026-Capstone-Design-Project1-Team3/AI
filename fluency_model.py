@@ -16,12 +16,23 @@ TREMOR_JITTER_THRESHOLD    = 0.03
 
 
 def _extract_audio_ffmpeg(video_path: str, audio_path: str):
+    temp_converted = video_path + "_converted.webm"
     subprocess.run([
         "ffmpeg", "-i", video_path,
+        "-c:v", "copy", "-c:a", "libopus",
+        "-strict", "experimental",
+        "-y", temp_converted
+    ], capture_output=True)
+    
+    subprocess.run([
+        "ffmpeg", "-i", temp_converted,
         "-vn", "-acodec", "pcm_s16le",
         "-ar", "16000",
         "-y", audio_path
-    ], check=True, capture_output=True)
+    ], capture_output=True)
+    
+    if os.path.exists(temp_converted):
+        os.remove(temp_converted)
 
 
 def _cleanup(*paths: str):
