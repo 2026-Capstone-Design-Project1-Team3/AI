@@ -6,23 +6,14 @@ model = WhisperModel("base", device="cpu", compute_type="int8")
 
 
 def _extract_audio_ffmpeg(video_path: str, audio_path: str):
-    temp_converted = video_path + "_converted.webm"
     subprocess.run([
-        "ffmpeg", "-i", video_path,
-        "-c:v", "copy", "-c:a", "libopus",
-        "-strict", "experimental",
-        "-y", temp_converted
-    ], capture_output=True)
-    
-    subprocess.run([
-        "ffmpeg", "-i", temp_converted,
+        "ffmpeg",
+        "-err_detect", "ignore_err",
+        "-i", video_path,
         "-vn", "-acodec", "pcm_s16le",
         "-ar", "16000",
         "-y", audio_path
     ], capture_output=True)
-    
-    if os.path.exists(temp_converted):
-        os.remove(temp_converted)
 
 
 def _get_duration(video_path: str) -> float:
