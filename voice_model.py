@@ -23,23 +23,23 @@ def _get_duration(video_path: str) -> float:
         "-of", "csv=p=0",
         video_path
     ], capture_output=True, text=True)
-    
+
     duration_str = result.stdout.strip()
     if duration_str and duration_str != 'N/A':
         return float(duration_str)
-    
+
     result2 = subprocess.run([
         "ffprobe", "-v", "quiet",
         "-show_entries", "stream=duration",
         "-of", "csv=p=0",
         video_path
     ], capture_output=True, text=True)
-    
+
     for line in result2.stdout.strip().split('\n'):
         line = line.strip()
         if line and line != 'N/A':
             return float(line)
-    
+
     return 0.0
 
 
@@ -87,6 +87,10 @@ def analyse_voice_model_from_path(video_path: str, interval_seconds=20):
             actual_duration += (segment.end - segment.start)
             total_syllables += syllable_count
 
+        # duration이 0이면 Whisper 결과에서 추정
+        if total_duration == 0 and all_segments_data:
+            total_duration = all_segments_data[-1]["end"]
+
         gc.collect()
 
         interval_speeds = []
@@ -113,7 +117,7 @@ def analyse_voice_model_from_path(video_path: str, interval_seconds=20):
             "full_text"        : ". ".join([s["text"] for s in all_segments_data]),
             "silence_log"      : analyze_silence(all_segments_data),
             "all_segments_data": all_segments_data,
-            "temp_audio_path"  : temp_audio_path,  # 다음 모델에서 재사용
+            "temp_audio_path"  : temp_audio_path,
         }
 
     except Exception as e:
